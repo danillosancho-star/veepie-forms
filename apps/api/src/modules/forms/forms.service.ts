@@ -1,4 +1,4 @@
-import { Injectable, NotFoundException, BadRequestException } from '@nestjs/common';
+import { Injectable, NotFoundException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { SupabaseService } from '../../common/supabase.service';
 import { AuthService } from '../auth/auth.service';
@@ -15,6 +15,24 @@ import {
   FormSubmission,
   TOKEN_EXPIRY_HOURS_DEFAULT,
 } from '@veepie-forms/shared';
+
+// Mapeamento valor (0-5) → ID do label no Monday
+const VALUE_TO_MONDAY_ID: Record<number, number> = {
+  0: 6, // Não Aplicável
+  1: 1, // Não Atende
+  2: 2, // Atende Parcialmente
+  3: 3, // Atende
+  4: 4, // Acima do Esperado
+  5: 5, // Muito Acima do Esperado
+};
+
+// Board IDs fixos do Vitalab
+const VITALAB_BOARDS: Record<string, { control: string; evaluation: string }> = {
+  'vitalab': {
+    control: '18405688011',    // QDR-DRH-011 — board de controle KNC
+    evaluation: '18406881785', // QDR-DRH-011.1 — board de avaliação KNC
+  },
+};
 
 @Injectable()
 export class FormsService {
@@ -42,15 +60,15 @@ export class FormsService {
 
     if (!tenant) throw new NotFoundException('Tenant não encontrado.');
 
-    // Busca o item no Monday para obter a função do colaborador
-    const item = await this.monday.getItem(tenant.monday_board_id, req.monday_item_id);
+    // Busca o item no board de CONTROLE para obter nome e cargo
+    const boards = VITALAB_BOARDS[tenant.slug];
+    if (!boards) throw new NotFoundException('Configuração de boards não encontrada.');
+
+    const item = await this.monday.getItem(boards.control, req.monday_item_id);
     if (!item) throw new NotFoundException('Colaborador não encontrado no Monday.');
 
-    // Identifica a função pelo valor do dropdown de função no board
-    // Assumindo que a coluna se chama "Cargo" ou similar
-    const funcaoColumn = item.column_values.find((c) =>
-      c.id === 'text_mm1tq1pe',
-    );
+    // Identifica a função pela coluna Cargo do board de controle
+    const funcaoColumn = item.column_values.find((c) => c.id === 'text_mm1tq1pe');
     const funcaoValue = funcaoColumn?.text ?? '';
 
     // Busca o schema de competências para essa função
@@ -68,17 +86,23 @@ export class FormsService {
       );
     }
 
+    // Cria um item novo no board de AVALIAÇÃO (011.1)
+    const evaluationItemId = await this.monday.createItem(
+      boards.evaluation,
+      item.name,
+    );
+
     // Define expiração
     const expiresInHours = req.expires_in_hours ?? TOKEN_EXPIRY_HOURS_DEFAULT;
     const expiresAt = new Date(Date.now() + expiresInHours * 3600 * 1000);
 
-    // Cria o token no banco
+    // Cria o token no banco — usa o board e item de AVALIAÇÃO
     const { data: tokenRecord, error } = await this.supabase.db
       .from('evaluation_tokens')
       .insert({
         tenant_id: req.tenant_id,
-        monday_item_id: req.monday_item_id,
-        monday_board_id: tenant.monday_board_id,
+        monday_item_id: evaluationItemId,
+        monday_board_id: boards.evaluation,
         function_schema_id: schema.id,
         collaborator_name: item.name,
         evaluator_email: req.evaluator_email,
@@ -94,7 +118,7 @@ export class FormsService {
 
     // Assina o JWT
     const jwt = this.auth.signEvaluationToken(
-      { sub: tokenRecord.id, tenant: tenant.slug, item: req.monday_item_id },
+      { sub: tokenRecord.id, tenant: tenant.slug, item: evaluationItemId },
       expiresInHours,
     );
 
@@ -116,7 +140,11 @@ export class FormsService {
       tenantId: req.tenant_id,
       action: 'token_created',
       actorIp,
-      metadata: { evaluator_email: req.evaluator_email, expires_at: expiresAt.toISOString() },
+      metadata: {
+        evaluator_email: req.evaluator_email,
+        expires_at: expiresAt.toISOString(),
+        evaluation_item_id: evaluationItemId,
+      },
     });
 
     return {
@@ -225,18 +253,26 @@ export class FormsService {
     };
   }
 
-  // ── Sincronização com o Monday (fire-and-forget com retry) ──────────────
-  private async syncToMonday(tokenRecord: any, submissionRecord: any, sigRecord: any, actorIp: string, actorAgent: string) {
+  // ── Sincronização com o Monday ───────────────────────────────────────────
+  private async syncToMonday(
+    tokenRecord: any,
+    submissionRecord: any,
+    sigRecord: any,
+    actorIp: string,
+    actorAgent: string,
+  ) {
     try {
-      // Monta o objeto de colunas a atualizar
       const columnValues: Record<string, unknown> = {};
 
-      // Respostas das competências
+      // Respostas das competências com IDs corretos do Monday
       for (const answer of submissionRecord.answers) {
-        columnValues[answer.monday_column_id] = { labels: [String(answer.value)] };
+        const mondayId = VALUE_TO_MONDAY_ID[answer.value];
+        if (mondayId !== undefined) {
+          columnValues[answer.monday_column_id] = { ids: [mondayId] };
+        }
       }
 
-      // Campos de texto
+      // Campos de texto livres
       if (submissionRecord.improvement_notes) {
         columnValues['long_text_mm1kjtqv'] = { text: submissionRecord.improvement_notes };
       }
@@ -245,19 +281,19 @@ export class FormsService {
       }
       columnValues['text_mm207h73'] = submissionRecord.evaluator_name;
 
-      // Upload da assinatura para o Monday
-      const mondayFileId = await this.monday.uploadSignatureFile(
-        tokenRecord.monday_item_id,
-        'signaturexyw2st9e', // coluna única de assinatura do avaliador
-        sigRecord.png_base64,
-        `assinatura_${tokenRecord.collaborator_name.replace(/\s+/g, '_')}.png`,
-      );
-
-      // Atualiza as demais colunas
+      // Atualiza as colunas no board de AVALIAÇÃO (011.1)
       await this.monday.updateItemColumns(
         tokenRecord.monday_board_id,
         tokenRecord.monday_item_id,
         columnValues,
+      );
+
+      // Upload da assinatura para o Monday
+      const mondayFileId = await this.monday.uploadSignatureFile(
+        tokenRecord.monday_item_id,
+        'signaturexyw2st9e',
+        sigRecord.png_base64,
+        `assinatura_${tokenRecord.collaborator_name.replace(/\s+/g, '_')}.png`,
       );
 
       // Atualiza o token para submitted
@@ -300,6 +336,7 @@ export class FormsService {
         tenantId: tokenRecord.tenant_id,
         action: 'coordinator_notified',
       });
+
     } catch (err) {
       // Salva o erro na submissão para retry manual
       await this.supabase.db

@@ -65,6 +65,23 @@ export class MondayService {
     return data.items?.[0] ?? null;
   }
 
+  async createItem(boardId: string, itemName: string): Promise<string> {
+    const data = await this.query<{
+      create_item: { id: string };
+    }>(
+      `mutation ($boardId: ID!, $itemName: String!) {
+        create_item(
+          board_id: $boardId,
+          item_name: $itemName
+        ) {
+          id
+        }
+      }`,
+      { boardId, itemName },
+    );
+    return data.create_item.id;
+  }
+
   async updateItemColumns(
     boardId: string,
     itemId: string,
@@ -90,6 +107,8 @@ export class MondayService {
     pngBase64: string,
     fileName: string,
   ): Promise<string> {
+    const serviceToken = this.config.get<string>('monday.serviceToken')!;
+
     const query = `mutation ($file: File!) {
       add_file_to_column(
         item_id: ${itemId},
@@ -100,37 +119,35 @@ export class MondayService {
       }
     }`;
 
-    const boundary = '----VeepieFormsBoundary';
     const pngBuffer = Buffer.from(pngBase64, 'base64');
+    const blob = new Blob([pngBuffer], { type: 'image/png' });
 
-    const body = [
-      `--${boundary}`,
-      `Content-Disposition: form-data; name="query"`,
-      '',
-      query,
-      `--${boundary}`,
-      `Content-Disposition: form-data; name="variables[file]"; filename="${fileName}"`,
-      'Content-Type: image/png',
-      '',
-      pngBuffer.toString('binary'),
-      `--${boundary}--`,
-    ].join('\r\n');
-
-    const serviceToken = this.config.get<string>('monday.serviceToken')!;
+    const formData = new FormData();
+    formData.append('query', query);
+    formData.append('variables', JSON.stringify({ file: null }));
+    formData.append('map', JSON.stringify({ '0': ['variables.file'] }));
+    formData.append('0', blob, fileName);
 
     const res = await fetch(this.apiUrl, {
       method: 'POST',
       headers: {
-        'Content-Type': `multipart/form-data; boundary=${boundary}`,
         Authorization: serviceToken,
         'API-Version': '2024-01',
       },
-      body,
+      body: formData,
     });
 
     const json = (await res.json()) as {
       data?: { add_file_to_column?: { id: string } };
+      errors?: unknown[];
     };
+
+    if (json.errors?.length) {
+      this.logger.error('Monday upload errors', json.errors);
+      throw new Error(`Monday upload error: ${JSON.stringify(json.errors)}`);
+    }
+
+    this.logger.log(`Signature uploaded, file id: ${json.data?.add_file_to_column?.id}`);
     return json.data?.add_file_to_column?.id ?? '';
   }
 
