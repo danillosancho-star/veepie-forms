@@ -5,7 +5,9 @@ import {
   HttpCode,
   HttpStatus,
   Logger,
+  Req,
 } from '@nestjs/common';
+import type { Request } from 'express';
 import { FormsService } from '../forms/forms.service';
 import { MondayService } from '../monday/monday.service';
 import { SupabaseService } from '../../common/supabase.service';
@@ -39,7 +41,7 @@ export class WebhooksController {
 
   @Post('monday')
   @HttpCode(HttpStatus.OK)
-  async mondayWebhook(@Body() body: MondayWebhookPayload) {
+  async mondayWebhook(@Body() body: MondayWebhookPayload, @Req() req: Request) {
     if (body.challenge) {
       this.logger.log('Monday webhook challenge received');
       return { challenge: body.challenge };
@@ -48,6 +50,9 @@ export class WebhooksController {
     const event = body.event!;
     const boardId = event.boardId;
     const itemId = event.pulseId ?? event.itemId;
+
+    const rawIp = (req.headers['x-forwarded-for'] as string) ?? req.ip ?? '';
+    const ip = rawIp.split(',')[0].trim();
 
     this.logger.log(`Webhook received — board: ${boardId}, item: ${itemId}`);
 
