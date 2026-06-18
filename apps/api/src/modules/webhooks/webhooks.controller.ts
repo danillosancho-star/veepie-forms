@@ -21,6 +21,12 @@ interface MondayWebhookPayload {
   challenge?: string;
 }
 
+// ID da coluna "E-mail do Avaliador" por board de controle
+const EMAIL_COLUMN_BY_BOARD: Record<string, string> = {
+  '18405688011': 'email_mm4ef62',   // QDR-DRH-011 — KNC
+  '18405904114': 'email_mm4e9mg9',  // QDR-DRH-012 — PP
+};
+
 @Controller('webhooks')
 export class WebhooksController {
   private readonly logger = new Logger(WebhooksController.name);
@@ -68,8 +74,9 @@ export class WebhooksController {
       return { success: false };
     }
 
-    // Coluna "E-mail do Avaliador" = email_mm4ef62
-    const emailColumn = item.column_values.find((c) => c.id === 'email_mm4ef62');
+    // Busca o e-mail usando o ID correto para cada board
+    const emailColumnId = EMAIL_COLUMN_BY_BOARD[String(boardId)] ?? 'email_mm4ef62';
+    const emailColumn = item.column_values.find((c) => c.id === emailColumnId);
     const rawValue = emailColumn?.value ?? '{}';
     let evaluatorEmail = '';
     try {
@@ -80,7 +87,7 @@ export class WebhooksController {
     }
 
     if (!evaluatorEmail) {
-      this.logger.warn(`No evaluator email for item ${itemId}`);
+      this.logger.warn(`No evaluator email for item ${itemId} on board ${boardId}`);
       return { success: false, message: 'E-mail do avaliador não preenchido.' };
     }
 
