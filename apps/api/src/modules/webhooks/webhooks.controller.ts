@@ -14,7 +14,8 @@ interface MondayWebhookPayload {
   event?: {
     type: string;
     boardId: number;
-    itemId: number;
+    pulseId?: number;   // item ID em eventos de status
+    itemId?: number;    // item ID em outros eventos
     userId: number;
   };
   challenge?: string;
@@ -39,8 +40,18 @@ export class WebhooksController {
       return { challenge: body.challenge };
     }
 
-    const { boardId, itemId } = body.event!;
+    const event = body.event!;
+    const boardId = event.boardId;
+
+    // Monday usa pulseId para eventos de status e itemId para outros
+    const itemId = event.pulseId ?? event.itemId;
+
     this.logger.log(`Webhook received — board: ${boardId}, item: ${itemId}`);
+
+    if (!itemId) {
+      this.logger.warn('No itemId in webhook payload', JSON.stringify(body));
+      return { success: false, message: 'No itemId found' };
+    }
 
     // Busca o tenant
     const { data: tenant } = await this.supabase.db
