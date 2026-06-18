@@ -16,25 +16,33 @@ import {
   TOKEN_EXPIRY_HOURS_DEFAULT,
 } from '@veepie-forms/shared';
 
-// Mapeamento valor (0-5) → ID do label no Monday
 const VALUE_TO_MONDAY_ID: Record<number, number> = {
-  0: 6, // Não Aplicável
-  1: 1, // Não Atende
-  2: 2, // Atende Parcialmente
-  3: 3, // Atende
-  4: 4, // Acima do Esperado
-  5: 5, // Muito Acima do Esperado
+  0: 6,
+  1: 1,
+  2: 2,
+  3: 3,
+  4: 4,
+  5: 5,
 };
 
-// Board IDs por tenant
-const TENANT_BOARDS: Record<string, { control: string; evaluation: string }> = {
+// Configuração completa por tenant
+const TENANT_BOARDS: Record<string, {
+  control: string;
+  evaluation: string;
+  evaluatorNameColumn: string;
+  signatureColumn: string;
+}> = {
   'vitalab': {
-    control: '18405688011',    // QDR-DRH-011 — KNC
-    evaluation: '18406881785', // QDR-DRH-011.1 — KNC
+    control: '18405688011',
+    evaluation: '18406881785',
+    evaluatorNameColumn: 'text_mm207h73',
+    signatureColumn: 'signaturexyw2st9e',
   },
   'vitalab-pp': {
-    control: '18405904114',    // QDR-DRH-012 — PP
-    evaluation: '18404678821', // QDR-DRH-012.1 — PP
+    control: '18405904114',
+    evaluation: '18404678821',
+    evaluatorNameColumn: 'text_mm20524v',
+    signatureColumn: 'signatureni9sn5fm',
   },
 };
 
@@ -50,7 +58,6 @@ export class FormsService {
     private config: ConfigService,
   ) {}
 
-  // ── 1. Inicia uma avaliação ─────────────────────────────────────────────
   async initiateEvaluation(
     req: InitiateEvaluationRequest,
     actorIp?: string,
@@ -148,7 +155,6 @@ export class FormsService {
     };
   }
 
-  // ── 2. Retorna o formulário ─────────────────────────────────────────────
   async getForm(jwtToken: string, actorIp?: string): Promise<GetFormResponse> {
     const payload = await this.auth.verifyEvaluationToken(jwtToken);
     const tokenRecord = await this.auth.validateTokenRecord(payload.sub);
@@ -175,7 +181,6 @@ export class FormsService {
     };
   }
 
-  // ── 3. Submete o formulário ─────────────────────────────────────────────
   async submitForm(
     req: SubmitFormRequest,
     actorIp: string,
@@ -238,7 +243,6 @@ export class FormsService {
     };
   }
 
-  // ── Sincronização com o Monday ──────────────────────────────────────────
   private async syncToMonday(
     tokenRecord: any,
     submissionRecord: any,
@@ -247,6 +251,15 @@ export class FormsService {
     actorAgent: string,
   ) {
     try {
+      // Busca a configuração do tenant
+      const { data: tenant } = await this.supabase.db
+        .from('tenants')
+        .select('slug')
+        .eq('id', tokenRecord.tenant_id)
+        .single();
+
+      const boards = TENANT_BOARDS[tenant?.slug ?? 'vitalab'];
+
       const columnValues: Record<string, unknown> = {};
 
       for (const answer of submissionRecord.answers) {
@@ -262,7 +275,9 @@ export class FormsService {
       if (submissionRecord.training_needs) {
         columnValues['long_textbfgxg6zh'] = { text: submissionRecord.training_needs };
       }
-      columnValues['text_mm207h73'] = submissionRecord.evaluator_name;
+
+      // Usa o ID correto da coluna Nome do Avaliador para cada tenant
+      columnValues[boards.evaluatorNameColumn] = submissionRecord.evaluator_name;
 
       await this.monday.updateItemColumns(
         tokenRecord.monday_board_id,
@@ -270,9 +285,10 @@ export class FormsService {
         columnValues,
       );
 
+      // Usa o ID correto da coluna de assinatura para cada tenant
       const mondayFileId = await this.monday.uploadSignatureFile(
         tokenRecord.monday_item_id,
-        'signaturexyw2st9e',
+        boards.signatureColumn,
         sigRecord.png_base64,
         `assinatura_${tokenRecord.collaborator_name.replace(/\s+/g, '_')}.png`,
       );
