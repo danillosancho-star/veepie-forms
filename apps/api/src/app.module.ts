@@ -16,6 +16,7 @@ import { MondayService } from './modules/monday/monday.service';
 import { SignatureService } from './modules/signature/signature.service';
 import { AuditService } from './modules/audit/audit.service';
 import { EmailService } from './modules/email/email.service';
+import { WebhooksController } from './modules/webhooks/webhooks.controller';
 
 @Module({
   imports: [
@@ -25,7 +26,7 @@ import { EmailService } from './modules/email/email.service';
     }),
     AuthModule,
   ],
-  controllers: [FormsController],
+  controllers: [FormsController, WebhooksController],
   providers: [
     SupabaseService,
     FormsService,
