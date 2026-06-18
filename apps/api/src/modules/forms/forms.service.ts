@@ -26,11 +26,15 @@ const VALUE_TO_MONDAY_ID: Record<number, number> = {
   5: 5, // Muito Acima do Esperado
 };
 
-// Board IDs fixos do Vitalab
-const VITALAB_BOARDS: Record<string, { control: string; evaluation: string }> = {
+// Board IDs por tenant
+const TENANT_BOARDS: Record<string, { control: string; evaluation: string }> = {
   'vitalab': {
-    control: '18405688011',    // QDR-DRH-011 — board de controle KNC
-    evaluation: '18406881785', // QDR-DRH-011.1 — board de avaliação KNC
+    control: '18405688011',    // QDR-DRH-011 — KNC
+    evaluation: '18406881785', // QDR-DRH-011.1 — KNC
+  },
+  'vitalab-pp': {
+    control: '18405904114',    // QDR-DRH-012 — PP
+    evaluation: '18404678821', // QDR-DRH-012.1 — PP
   },
 };
 
@@ -46,12 +50,11 @@ export class FormsService {
     private config: ConfigService,
   ) {}
 
-  // ── 1. Inicia uma avaliação: cria token e envia e-mail ──────────────────
+  // ── 1. Inicia uma avaliação ─────────────────────────────────────────────
   async initiateEvaluation(
     req: InitiateEvaluationRequest,
     actorIp?: string,
   ): Promise<InitiateEvaluationResponse> {
-    // Busca o tenant
     const { data: tenant } = await this.supabase.db
       .from('tenants')
       .select('*')
@@ -60,18 +63,15 @@ export class FormsService {
 
     if (!tenant) throw new NotFoundException('Tenant não encontrado.');
 
-    // Busca o item no board de CONTROLE para obter nome e cargo
-    const boards = VITALAB_BOARDS[tenant.slug];
+    const boards = TENANT_BOARDS[tenant.slug];
     if (!boards) throw new NotFoundException('Configuração de boards não encontrada.');
 
     const item = await this.monday.getItem(boards.control, req.monday_item_id);
     if (!item) throw new NotFoundException('Colaborador não encontrado no Monday.');
 
-    // Identifica a função pela coluna Cargo do board de controle
     const funcaoColumn = item.column_values.find((c) => c.id === 'text_mm1tq1pe');
     const funcaoValue = funcaoColumn?.text ?? '';
 
-    // Busca o schema de competências para essa função
     const { data: schema } = await this.supabase.db
       .from('function_schemas')
       .select('*')
@@ -86,17 +86,14 @@ export class FormsService {
       );
     }
 
-    // Cria um item novo no board de AVALIAÇÃO (011.1)
     const evaluationItemId = await this.monday.createItem(
       boards.evaluation,
       item.name,
     );
 
-    // Define expiração
     const expiresInHours = req.expires_in_hours ?? TOKEN_EXPIRY_HOURS_DEFAULT;
     const expiresAt = new Date(Date.now() + expiresInHours * 3600 * 1000);
 
-    // Cria o token no banco — usa o board e item de AVALIAÇÃO
     const { data: tokenRecord, error } = await this.supabase.db
       .from('evaluation_tokens')
       .insert({
@@ -116,7 +113,6 @@ export class FormsService {
 
     if (error) throw error;
 
-    // Assina o JWT
     const jwt = this.auth.signEvaluationToken(
       { sub: tokenRecord.id, tenant: tenant.slug, item: evaluationItemId },
       expiresInHours,
@@ -125,7 +121,6 @@ export class FormsService {
     const webUrl = this.config.get<string>('app.webUrl')!;
     const evaluationUrl = `${webUrl}/avaliacao?token=${jwt}`;
 
-    // Envia e-mail para o avaliador
     await this.email.sendEvaluationLink({
       to: req.evaluator_email,
       evaluatorName: req.evaluator_name,
@@ -134,7 +129,6 @@ export class FormsService {
       expiresAt,
     });
 
-    // Audit
     await this.audit.log({
       tokenId: tokenRecord.id,
       tenantId: req.tenant_id,
@@ -154,22 +148,19 @@ export class FormsService {
     };
   }
 
-  // ── 2. Retorna o formulário para o avaliador preencher ──────────────────
+  // ── 2. Retorna o formulário ─────────────────────────────────────────────
   async getForm(jwtToken: string, actorIp?: string): Promise<GetFormResponse> {
     const payload = await this.auth.verifyEvaluationToken(jwtToken);
     const tokenRecord = await this.auth.validateTokenRecord(payload.sub);
 
-    // Marca como aberto
     await this.auth.markTokenOpened(tokenRecord.id);
 
-    // Busca o schema de competências
     const { data: schema } = await this.supabase.db
       .from('function_schemas')
       .select('*')
       .eq('id', tokenRecord.function_schema_id)
       .single();
 
-    // Audit
     await this.audit.log({
       tokenId: tokenRecord.id,
       tenantId: tokenRecord.tenant_id,
@@ -184,7 +175,7 @@ export class FormsService {
     };
   }
 
-  // ── 3. Submete o formulário preenchido com assinatura ───────────────────
+  // ── 3. Submete o formulário ─────────────────────────────────────────────
   async submitForm(
     req: SubmitFormRequest,
     actorIp: string,
@@ -192,7 +183,6 @@ export class FormsService {
   ): Promise<SubmitFormResponse> {
     const tokenRecord = await this.auth.validateTokenRecord(req.token_id);
 
-    // Monta a submissão
     const submission: FormSubmission = {
       token_id: req.token_id,
       answers: req.answers,
@@ -202,7 +192,6 @@ export class FormsService {
       submitted_at: new Date().toISOString(),
     };
 
-    // Persiste a submissão
     const { data: submissionRecord, error: subError } = await this.supabase.db
       .from('form_submissions')
       .insert({
@@ -217,10 +206,8 @@ export class FormsService {
 
     if (subError) throw subError;
 
-    // Gera hash do documento para a assinatura
     const documentHash = this.signature.hashDocument(submission);
 
-    // Salva assinatura no Supabase
     const sigRecord = await this.signature.saveSignature({
       tokenId: req.token_id,
       signerName: req.evaluator_name,
@@ -231,7 +218,6 @@ export class FormsService {
       pngBase64: req.signature_png_base64,
     });
 
-    // Audit
     await this.audit.log({
       tokenId: req.token_id,
       tenantId: tokenRecord.tenant_id,
@@ -241,7 +227,6 @@ export class FormsService {
       metadata: { document_hash: documentHash, signer_role: 'evaluator' },
     });
 
-    // Sincroniza com o Monday (async — não bloqueia a resposta)
     this.syncToMonday(tokenRecord, submissionRecord, sigRecord, actorIp, actorAgent).catch(
       (err) => console.error('Monday sync error:', err),
     );
@@ -253,7 +238,7 @@ export class FormsService {
     };
   }
 
-  // ── Sincronização com o Monday ───────────────────────────────────────────
+  // ── Sincronização com o Monday ──────────────────────────────────────────
   private async syncToMonday(
     tokenRecord: any,
     submissionRecord: any,
@@ -264,7 +249,6 @@ export class FormsService {
     try {
       const columnValues: Record<string, unknown> = {};
 
-      // Respostas das competências com IDs corretos do Monday
       for (const answer of submissionRecord.answers) {
         const mondayId = VALUE_TO_MONDAY_ID[answer.value];
         if (mondayId !== undefined) {
@@ -272,7 +256,6 @@ export class FormsService {
         }
       }
 
-      // Campos de texto livres
       if (submissionRecord.improvement_notes) {
         columnValues['long_text_mm1kjtqv'] = { text: submissionRecord.improvement_notes };
       }
@@ -281,14 +264,12 @@ export class FormsService {
       }
       columnValues['text_mm207h73'] = submissionRecord.evaluator_name;
 
-      // Atualiza as colunas no board de AVALIAÇÃO (011.1)
       await this.monday.updateItemColumns(
         tokenRecord.monday_board_id,
         tokenRecord.monday_item_id,
         columnValues,
       );
 
-      // Upload da assinatura para o Monday
       const mondayFileId = await this.monday.uploadSignatureFile(
         tokenRecord.monday_item_id,
         'signaturexyw2st9e',
@@ -296,25 +277,21 @@ export class FormsService {
         `assinatura_${tokenRecord.collaborator_name.replace(/\s+/g, '_')}.png`,
       );
 
-      // Atualiza o token para submitted
       await this.supabase.db
         .from('evaluation_tokens')
         .update({ status: 'submitted', submitted_at: new Date().toISOString() })
         .eq('id', tokenRecord.id);
 
-      // Atualiza a submissão com o sync
       await this.supabase.db
         .from('form_submissions')
         .update({ monday_synced_at: new Date().toISOString() })
         .eq('id', submissionRecord.id);
 
-      // Atualiza o file_id na assinatura
       await this.supabase.db
         .from('signature_records')
         .update({ monday_file_id: mondayFileId })
         .eq('id', sigRecord.id);
 
-      // Audit
       await this.audit.log({
         tokenId: tokenRecord.id,
         tenantId: tokenRecord.tenant_id,
@@ -324,7 +301,6 @@ export class FormsService {
         metadata: { monday_file_id: mondayFileId },
       });
 
-      // Notifica o coordenador por e-mail
       await this.email.sendCompletionNotification({
         to: tokenRecord.coordinator_email,
         collaboratorName: tokenRecord.collaborator_name,
@@ -338,7 +314,6 @@ export class FormsService {
       });
 
     } catch (err) {
-      // Salva o erro na submissão para retry manual
       await this.supabase.db
         .from('form_submissions')
         .update({ monday_sync_error: String(err) })

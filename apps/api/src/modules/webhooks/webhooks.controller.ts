@@ -14,8 +14,8 @@ interface MondayWebhookPayload {
   event?: {
     type: string;
     boardId: number;
-    pulseId?: number;   // item ID em eventos de status
-    itemId?: number;    // item ID em outros eventos
+    pulseId?: number;
+    itemId?: number;
     userId: number;
   };
   challenge?: string;
@@ -34,7 +34,6 @@ export class WebhooksController {
   @Post('monday')
   @HttpCode(HttpStatus.OK)
   async mondayWebhook(@Body() body: MondayWebhookPayload) {
-    // Verificação do endpoint pelo Monday
     if (body.challenge) {
       this.logger.log('Monday webhook challenge received');
       return { challenge: body.challenge };
@@ -42,8 +41,6 @@ export class WebhooksController {
 
     const event = body.event!;
     const boardId = event.boardId;
-
-    // Monday usa pulseId para eventos de status e itemId para outros
     const itemId = event.pulseId ?? event.itemId;
 
     this.logger.log(`Webhook received — board: ${boardId}, item: ${itemId}`);
@@ -53,18 +50,18 @@ export class WebhooksController {
       return { success: false, message: 'No itemId found' };
     }
 
-    // Busca o tenant
+    // Busca o tenant pelo board de controle
     const { data: tenant } = await this.supabase.db
       .from('tenants')
       .select('*')
+      .eq('monday_board_id', String(boardId))
       .single();
 
     if (!tenant) {
-      this.logger.warn('No tenant found');
+      this.logger.warn(`No tenant found for board ${boardId}`);
       return { success: false };
     }
 
-    // Busca o item no Monday para pegar o e-mail do avaliador
     const item = await this.monday.getItem(String(boardId), String(itemId));
     if (!item) {
       this.logger.warn(`Item ${itemId} not found`);
