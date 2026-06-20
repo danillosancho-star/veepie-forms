@@ -170,6 +170,7 @@ export class MondayService {
   }
 
   async searchItemsByName(boardId: string, name: string) {
+    const escapedName = name.replace(/"/g, '\\"');
     const data = await this.query<{
       boards: {
         items_page: {
@@ -181,10 +182,10 @@ export class MondayService {
         };
       }[];
     }>(
-      `query ($boardId: [ID!]!, $name: String!) {
+      `query ($boardId: [ID!]!) {
         boards(ids: $boardId) {
           items_page(query_params: {
-            rules: [{ column_id: "name", compare_value: [$name] }]
+            rules: [{ column_id: "name", compare_value: ["${escapedName}"] }]
           }) {
             items {
               id
@@ -198,7 +199,7 @@ export class MondayService {
           }
         }
       }`,
-      { boardId, name },
+      { boardId },
     );
     return data.boards?.[0]?.items_page?.items ?? [];
   }
