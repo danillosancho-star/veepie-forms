@@ -151,6 +151,58 @@ export class MondayService {
     return json.data?.add_file_to_column?.id ?? '';
   }
 
+  async getUserById(userId: string): Promise<{ email: string; name: string } | null> {
+    const data = await this.query<{
+      users: { id: string; name: string; email: string }[];
+    }>(
+      `query ($userId: [ID!]!) {
+        users(ids: $userId) {
+          id
+          name
+          email
+        }
+      }`,
+      { userId },
+    );
+    const user = data.users?.[0];
+    if (!user) return null;
+    return { email: user.email, name: user.name };
+  }
+
+  async searchItemsByName(boardId: string, name: string) {
+    const data = await this.query<{
+      boards: {
+        items_page: {
+          items: {
+            id: string;
+            name: string;
+            column_values: { id: string; text: string; value: string }[];
+          }[];
+        };
+      }[];
+    }>(
+      `query ($boardId: [ID!]!, $name: String!) {
+        boards(ids: $boardId) {
+          items_page(query_params: {
+            rules: [{ column_id: "name", compare_value: [$name] }]
+          }) {
+            items {
+              id
+              name
+              column_values {
+                id
+                text
+                value
+              }
+            }
+          }
+        }
+      }`,
+      { boardId, name },
+    );
+    return data.boards?.[0]?.items_page?.items ?? [];
+  }
+
   async createNotification(userId: string, itemId: string, text: string) {
     return this.query(
       `mutation ($userId: ID!, $itemId: ID!, $text: String!) {

@@ -1,4 +1,4 @@
-import { Module } from '@nestjs/common';
+import { Module, forwardRef } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
 import {
   appConfig,
@@ -12,6 +12,8 @@ import { SupabaseService } from './common/supabase.service';
 import { AuthModule } from './modules/auth/auth.module';
 import { FormsController } from './modules/forms/forms.controller';
 import { FormsService } from './modules/forms/forms.service';
+import { ApprovalController } from './modules/forms/approval.controller';
+import { ApprovalService } from './modules/forms/approval.service';
 import { MondayService } from './modules/monday/monday.service';
 import { SignatureService } from './modules/signature/signature.service';
 import { AuditService } from './modules/audit/audit.service';
@@ -26,10 +28,11 @@ import { WebhooksController } from './modules/webhooks/webhooks.controller';
     }),
     AuthModule,
   ],
-  controllers: [FormsController, WebhooksController],
+  controllers: [FormsController, ApprovalController, WebhooksController],
   providers: [
     SupabaseService,
     FormsService,
+    ApprovalService,
     MondayService,
     SignatureService,
     AuditService,

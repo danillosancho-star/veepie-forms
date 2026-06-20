@@ -1,4 +1,4 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { Injectable, NotFoundException, Logger, forwardRef, Inject } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { SupabaseService } from '../../common/supabase.service';
 import { AuthService } from '../auth/auth.service';
@@ -6,6 +6,7 @@ import { MondayService } from '../monday/monday.service';
 import { SignatureService } from '../signature/signature.service';
 import { AuditService } from '../audit/audit.service';
 import { EmailService } from '../email/email.service';
+import { ApprovalService } from './approval.service';
 import {
   InitiateEvaluationRequest,
   InitiateEvaluationResponse,
@@ -25,7 +26,6 @@ const VALUE_TO_MONDAY_ID: Record<number, number> = {
   5: 5,
 };
 
-// Configuração completa por tenant
 const TENANT_BOARDS: Record<string, {
   control: string;
   evaluation: string;
@@ -48,6 +48,8 @@ const TENANT_BOARDS: Record<string, {
 
 @Injectable()
 export class FormsService {
+  private readonly logger = new Logger(FormsService.name);
+
   constructor(
     private supabase: SupabaseService,
     private auth: AuthService,
@@ -56,6 +58,8 @@ export class FormsService {
     private audit: AuditService,
     private email: EmailService,
     private config: ConfigService,
+    @Inject(forwardRef(() => ApprovalService))
+    private approvalService: ApprovalService,
   ) {}
 
   async initiateEvaluation(
@@ -233,7 +237,7 @@ export class FormsService {
     });
 
     this.syncToMonday(tokenRecord, submissionRecord, sigRecord, actorIp, actorAgent).catch(
-      (err) => console.error('Monday sync error:', err),
+      (err) => this.logger.error('Monday sync error:', err),
     );
 
     return {
@@ -251,7 +255,6 @@ export class FormsService {
     actorAgent: string,
   ) {
     try {
-      // Busca a configuração do tenant
       const { data: tenant } = await this.supabase.db
         .from('tenants')
         .select('slug')
@@ -259,7 +262,6 @@ export class FormsService {
         .single();
 
       const boards = TENANT_BOARDS[tenant?.slug ?? 'vitalab'];
-
       const columnValues: Record<string, unknown> = {};
 
       for (const answer of submissionRecord.answers) {
@@ -275,8 +277,6 @@ export class FormsService {
       if (submissionRecord.training_needs) {
         columnValues['long_textbfgxg6zh'] = { text: submissionRecord.training_needs };
       }
-
-      // Usa o ID correto da coluna Nome do Avaliador para cada tenant
       columnValues[boards.evaluatorNameColumn] = submissionRecord.evaluator_name;
 
       await this.monday.updateItemColumns(
@@ -285,7 +285,6 @@ export class FormsService {
         columnValues,
       );
 
-      // Usa o ID correto da coluna de assinatura para cada tenant
       const mondayFileId = await this.monday.uploadSignatureFile(
         tokenRecord.monday_item_id,
         boards.signatureColumn,
@@ -317,17 +316,10 @@ export class FormsService {
         metadata: { monday_file_id: mondayFileId },
       });
 
-      await this.email.sendCompletionNotification({
-        to: tokenRecord.coordinator_email,
-        collaboratorName: tokenRecord.collaborator_name,
-        evaluatorName: submissionRecord.evaluator_name,
-      });
-
-      await this.audit.log({
-        tokenId: tokenRecord.id,
-        tenantId: tokenRecord.tenant_id,
-        action: 'coordinator_notified',
-      });
+      // Dispara aprovação do RH após sincronizar com o Monday
+      await this.approvalService.initiateApproval(tokenRecord.id, actorIp).catch(
+        (err) => this.logger.error('Failed to initiate RH approval:', err),
+      );
 
     } catch (err) {
       await this.supabase.db
