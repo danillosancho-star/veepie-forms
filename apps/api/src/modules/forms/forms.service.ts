@@ -105,12 +105,14 @@ export class FormsService {
     const expiresInHours = req.expires_in_hours ?? TOKEN_EXPIRY_HOURS_DEFAULT;
     const expiresAt = new Date(Date.now() + expiresInHours * 3600 * 1000);
 
+    // Salva o ID do item do board de CONTROLE para uso posterior na busca do Gestor RH
     const { data: tokenRecord, error } = await this.supabase.db
       .from('evaluation_tokens')
       .insert({
         tenant_id: req.tenant_id,
         monday_item_id: evaluationItemId,
         monday_board_id: boards.evaluation,
+        monday_control_item_id: req.monday_item_id, // ← ID do item no board de controle
         function_schema_id: schema.id,
         collaborator_name: item.name,
         evaluator_email: req.evaluator_email,

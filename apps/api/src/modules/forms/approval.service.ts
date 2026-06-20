@@ -11,7 +11,7 @@ import { SignatureService } from '../signature/signature.service';
 // Coluna Gestor RH por board de controle
 const GESTOR_RH_COLUMN: Record<string, string> = {
   '18405688011': 'multiple_person_mm4gtvmh', // KNC
-  '18405904114': 'multiple_person_mm4gtvmh', // PP (mesma coluna)
+  '18405904114': 'multiple_person_mm4gtvmh', // PP
 };
 
 // Coluna assinatura do RH por board de avaliação
@@ -40,31 +40,6 @@ export class ApprovalService {
     private config: ConfigService,
   ) {}
 
-  // ── Busca o e-mail do Gestor RH no Monday ─────────────────────────────
-  async getGestorRhEmail(controlBoardId: string, itemId: string): Promise<{ email: string; name: string } | null> {
-    const item = await this.monday.getItem(controlBoardId, itemId);
-    if (!item) return null;
-
-    const gestorColumn = item.column_values.find(
-      (c) => c.id === GESTOR_RH_COLUMN[controlBoardId],
-    );
-
-    if (!gestorColumn?.value) return null;
-
-    try {
-      const parsed = JSON.parse(gestorColumn.value);
-      const personId = parsed?.personsAndTeams?.[0]?.id;
-      if (!personId) return null;
-
-      // Busca o e-mail do usuário Monday pelo ID
-      const data = await this.monday.getUserById(String(personId));
-      return data;
-    } catch {
-      return null;
-    }
-  }
-
-  // ── Cria token de aprovação e envia e-mail para o RH ──────────────────
   async initiateApproval(evaluationTokenId: string, actorIp?: string) {
     // Busca o token de avaliação
     const { data: evalToken } = await this.supabase.db
@@ -79,25 +54,51 @@ export class ApprovalService {
     const controlBoardId = EVAL_TO_CONTROL_BOARD[evalToken.monday_board_id];
     if (!controlBoardId) throw new NotFoundException('Board de controle não encontrado.');
 
-    // Busca o item original no board de controle para pegar o Gestor RH
-    // O monday_item_id do evalToken é o item do board de AVALIAÇÃO (011.1)
-    // Precisamos buscar o item do board de CONTROLE pelo nome do colaborador
-    const { data: tenant } = await this.supabase.db
-      .from('tenants')
-      .select('*')
-      .eq('id', evalToken.tenant_id)
-      .single();
+    // Usa o ID do item do board de controle salvo no token
+    const controlItemId = evalToken.monday_control_item_id;
+    if (!controlItemId) {
+      this.logger.warn(`No control item ID for token ${evaluationTokenId}`);
+      return null;
+    }
 
-    // Busca itens do board de controle para encontrar o colaborador
-    const gestorInfo = await this.findGestorRhByCollaborator(
-      controlBoardId,
-      evalToken.collaborator_name,
-    );
+    // Busca o item no board de controle diretamente pelo ID
+    const item = await this.monday.getItem(controlBoardId, controlItemId);
+    if (!item) {
+      this.logger.warn(`Control item ${controlItemId} not found on board ${controlBoardId}`);
+      return null;
+    }
 
-    if (!gestorInfo) {
+    // Busca o Gestor RH na coluna people
+    const gestorColumnId = GESTOR_RH_COLUMN[controlBoardId];
+    const gestorColumn = item.column_values.find((c) => c.id === gestorColumnId);
+
+    if (!gestorColumn?.value) {
       this.logger.warn(`No Gestor RH found for ${evalToken.collaborator_name}`);
       return null;
     }
+
+    let gestorInfo: { email: string; name: string } | null = null;
+    try {
+      const parsed = JSON.parse(gestorColumn.value);
+      const personId = parsed?.personsAndTeams?.[0]?.id;
+      if (personId) {
+        gestorInfo = await this.monday.getUserById(String(personId));
+      }
+    } catch {
+      this.logger.warn('Failed to parse Gestor RH column value');
+    }
+
+    if (!gestorInfo) {
+      this.logger.warn(`Could not get Gestor RH email for ${evalToken.collaborator_name}`);
+      return null;
+    }
+
+    // Busca o tenant
+    const { data: tenant } = await this.supabase.db
+      .from('tenants')
+      .select('slug')
+      .eq('id', evalToken.tenant_id)
+      .single();
 
     const expiresAt = new Date(Date.now() + 72 * 3600 * 1000);
 
@@ -122,17 +123,17 @@ export class ApprovalService {
 
     // Gera JWT para o link de aprovação
     const jwt = this.auth.signEvaluationToken(
-      { sub: approvalToken.id, tenant: tenant.slug, item: evalToken.monday_item_id },
+      { sub: approvalToken.id, tenant: tenant?.slug ?? '', item: evalToken.monday_item_id },
       72,
     );
 
     const webUrl = this.config.get<string>('app.webUrl')!;
     const approvalUrl = `${webUrl}/aprovacao?token=${jwt}`;
 
-    // Busca o resumo da submissão para incluir no e-mail
+    // Busca o nome do avaliador
     const { data: submission } = await this.supabase.db
       .from('form_submissions')
-      .select('*')
+      .select('evaluator_name')
       .eq('token_id', evaluationTokenId)
       .single();
 
@@ -158,32 +159,6 @@ export class ApprovalService {
     return { approval_token_id: approvalToken.id, approvalUrl };
   }
 
-  // ── Busca Gestor RH pelo nome do colaborador no board de controle ──────
-  private async findGestorRhByCollaborator(
-    controlBoardId: string,
-    collaboratorName: string,
-  ): Promise<{ email: string; name: string } | null> {
-    const items = await this.monday.searchItemsByName(controlBoardId, collaboratorName);
-    if (!items?.length) return null;
-
-    const item = items[0];
-    const gestorColumnId = GESTOR_RH_COLUMN[controlBoardId];
-    const gestorColumn = item.column_values.find((c) => c.id === gestorColumnId);
-
-    if (!gestorColumn?.value) return null;
-
-    try {
-      const parsed = JSON.parse(gestorColumn.value);
-      const personId = parsed?.personsAndTeams?.[0]?.id;
-      if (!personId) return null;
-
-      return await this.monday.getUserById(String(personId));
-    } catch {
-      return null;
-    }
-  }
-
-  // ── Carrega a página de aprovação ─────────────────────────────────────
   async getApproval(jwtToken: string, actorIp?: string) {
     const payload = await this.auth.verifyEvaluationToken(jwtToken);
 
@@ -215,7 +190,7 @@ export class ApprovalService {
       .eq('token_id', approvalToken.evaluation_token_id)
       .single();
 
-    // Busca o schema para mostrar os nomes das competências
+    // Busca o schema de competências
     const { data: evalToken } = await this.supabase.db
       .from('evaluation_tokens')
       .select('*, function_schemas(*)')
@@ -229,7 +204,6 @@ export class ApprovalService {
     };
   }
 
-  // ── Submete a assinatura do RH ─────────────────────────────────────────
   async submitApproval(params: {
     approvalTokenId: string;
     approverName: string;
@@ -248,7 +222,10 @@ export class ApprovalService {
 
     // Hash do documento
     const documentHash = createHash('sha256')
-      .update(JSON.stringify({ approval_token_id: params.approvalTokenId, approver: params.approverName }))
+      .update(JSON.stringify({
+        approval_token_id: params.approvalTokenId,
+        approver: params.approverName,
+      }))
       .digest('hex');
 
     // Salva assinatura no Supabase
