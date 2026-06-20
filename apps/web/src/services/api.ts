@@ -11,11 +11,18 @@ const api = axios.create({
 });
 
 export const formsApi = {
-  // Carrega o formulário pelo token JWT da URL
   getForm: (token: string): Promise<GetFormResponse> =>
     api.get(`/forms?token=${token}`).then((r) => r.data),
 
-  // Submete o formulário preenchido com a assinatura
   submit: (body: SubmitFormRequest): Promise<SubmitFormResponse> =>
     api.post('/forms/submit', body).then((r) => r.data),
+
+  getApproval: (token: string) =>
+    api.get(`/approvals?token=${token}`).then((r) => r.data),
+
+  submitApproval: (body: {
+    approval_token_id: string;
+    approver_name: string;
+    signature_png_base64: string;
+  }) => api.post('/approvals/submit', body).then((r) => r.data),
 };
