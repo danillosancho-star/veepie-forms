@@ -10,8 +10,8 @@ import { SignatureService } from '../signature/signature.service';
 
 // Coluna Gestor RH por board de controle
 const GESTOR_RH_COLUMN: Record<string, string> = {
-  '18405688011': 'multiple_person_mm4gtvmh', // KNC
-  '18405904114': 'multiple_person_mm4gtvmh', // PP
+  '18405688011': 'multiple_person_mm4gtvmh', // KNC — "Gestor RH"
+  '18405904114': 'multiple_person_mm4g76ep', // PP — "Gestor do RH"
 };
 
 // Coluna assinatura do RH por board de avaliação
