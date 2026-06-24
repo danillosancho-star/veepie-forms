@@ -17,6 +17,7 @@ export class EmailService {
 
   async sendEvaluationLink(params: {
     to: string;
+    cc?: string;
     evaluatorName: string;
     collaboratorName: string;
     evaluationUrl: string;
@@ -24,33 +25,40 @@ export class EmailService {
   }) {
     const expiry = params.expiresAt.toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo' });
 
-    try {
-      await this.resend.emails.send({
-        from: this.from,
-        to: params.to,
-        subject: `Avaliação de competências — ${params.collaboratorName}`,
-        html: `
-          <div style="font-family: sans-serif; max-width: 560px; margin: 0 auto; color: #333;">
-            <h2 style="color: #1a1a2e;">Olá, ${params.evaluatorName}!</h2>
-            <p>Você recebeu uma solicitação para avaliar as competências de <strong>${params.collaboratorName}</strong>.</p>
-            <p>Clique no botão abaixo para acessar o formulário de avaliação:</p>
-            <div style="margin: 32px 0;">
-              <a href="${params.evaluationUrl}"
-                 style="background: #4f46e5; color: white; padding: 14px 28px;
-                        border-radius: 8px; text-decoration: none; font-weight: 600;">
-                Abrir formulário de avaliação
-              </a>
-            </div>
-            <p style="color: #666; font-size: 14px;">
-              ⏰ Este link expira em: <strong>${expiry}</strong>
-            </p>
-            <hr style="border: none; border-top: 1px solid #eee; margin: 24px 0;" />
-            <p style="color: #999; font-size: 12px;">
-              Veepie Forms — Se você não esperava este e-mail, ignore-o.
-            </p>
+    const emailPayload: any = {
+      from: this.from,
+      to: params.to,
+      subject: `Avaliação de competências — ${params.collaboratorName}`,
+      html: `
+        <div style="font-family: sans-serif; max-width: 560px; margin: 0 auto; color: #333;">
+          <h2 style="color: #1a1a2e;">Olá, ${params.evaluatorName}!</h2>
+          <p>Você recebeu uma solicitação para avaliar as competências de <strong>${params.collaboratorName}</strong>.</p>
+          <p>Clique no botão abaixo para acessar o formulário de avaliação:</p>
+          <div style="margin: 32px 0;">
+            <a href="${params.evaluationUrl}"
+               style="background: #4f46e5; color: white; padding: 14px 28px;
+                      border-radius: 8px; text-decoration: none; font-weight: 600;">
+              Abrir formulário de avaliação
+            </a>
           </div>
-        `,
-      });
+          <p style="color: #666; font-size: 14px;">
+            ⏰ Este link expira em: <strong>${expiry}</strong>
+          </p>
+          <hr style="border: none; border-top: 1px solid #eee; margin: 24px 0;" />
+          <p style="color: #999; font-size: 12px;">
+            Veepie Forms — Se você não esperava este e-mail, ignore-o.
+          </p>
+        </div>
+      `,
+    };
+
+    // Adiciona o Gestor RH em cópia, se informado
+    if (params.cc) {
+      emailPayload.cc = params.cc;
+    }
+
+    try {
+      await this.resend.emails.send(emailPayload);
     } catch (err) {
       this.logger.error('Failed to send evaluation link email', err);
     }

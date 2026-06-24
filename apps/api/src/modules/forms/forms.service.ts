@@ -65,6 +65,7 @@ export class FormsService {
   async initiateEvaluation(
     req: InitiateEvaluationRequest,
     actorIp?: string,
+    ccEmail?: string,
   ): Promise<InitiateEvaluationResponse> {
     const { data: tenant } = await this.supabase.db
       .from('tenants')
@@ -105,14 +106,13 @@ export class FormsService {
     const expiresInHours = req.expires_in_hours ?? TOKEN_EXPIRY_HOURS_DEFAULT;
     const expiresAt = new Date(Date.now() + expiresInHours * 3600 * 1000);
 
-    // Salva o ID do item do board de CONTROLE para uso posterior na busca do Gestor RH
     const { data: tokenRecord, error } = await this.supabase.db
       .from('evaluation_tokens')
       .insert({
         tenant_id: req.tenant_id,
         monday_item_id: evaluationItemId,
         monday_board_id: boards.evaluation,
-        monday_control_item_id: req.monday_item_id, // ← ID do item no board de controle
+        monday_control_item_id: req.monday_item_id,
         function_schema_id: schema.id,
         collaborator_name: item.name,
         evaluator_email: req.evaluator_email,
@@ -136,6 +136,7 @@ export class FormsService {
 
     await this.email.sendEvaluationLink({
       to: req.evaluator_email,
+      cc: ccEmail,
       evaluatorName: req.evaluator_name,
       collaboratorName: item.name,
       evaluationUrl,
@@ -149,6 +150,7 @@ export class FormsService {
       actorIp,
       metadata: {
         evaluator_email: req.evaluator_email,
+        cc_email: ccEmail,
         expires_at: expiresAt.toISOString(),
         evaluation_item_id: evaluationItemId,
       },
@@ -318,7 +320,6 @@ export class FormsService {
         metadata: { monday_file_id: mondayFileId },
       });
 
-      // Dispara aprovação do RH após sincronizar com o Monday
       await this.approvalService.initiateApproval(tokenRecord.id, actorIp).catch(
         (err) => this.logger.error('Failed to initiate RH approval:', err),
       );

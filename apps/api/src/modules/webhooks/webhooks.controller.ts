@@ -29,6 +29,12 @@ const EMAIL_COLUMN_BY_BOARD: Record<string, string> = {
   '18405904114': 'email_mm4e9mg9',  // QDR-DRH-012 — PP
 };
 
+// ID da coluna "Gestor RH" por board de controle
+const GESTOR_RH_COLUMN_BY_BOARD: Record<string, string> = {
+  '18405688011': 'multiple_person_mm4gtvmh', // KNC
+  '18405904114': 'multiple_person_mm4g76ep', // PP
+};
+
 @Controller('webhooks')
 export class WebhooksController {
   private readonly logger = new Logger(WebhooksController.name);
@@ -61,7 +67,6 @@ export class WebhooksController {
       return { success: false, message: 'No itemId found' };
     }
 
-    // Busca o tenant pelo board de controle
     const { data: tenant } = await this.supabase.db
       .from('tenants')
       .select('*')
@@ -79,7 +84,7 @@ export class WebhooksController {
       return { success: false };
     }
 
-    // Busca o e-mail usando o ID correto para cada board
+    // Busca o e-mail do avaliador
     const emailColumnId = EMAIL_COLUMN_BY_BOARD[String(boardId)] ?? 'email_mm4ef62';
     const emailColumn = item.column_values.find((c) => c.id === emailColumnId);
     const rawValue = emailColumn?.value ?? '{}';
@@ -96,15 +101,36 @@ export class WebhooksController {
       return { success: false, message: 'E-mail do avaliador não preenchido.' };
     }
 
+    // Busca o e-mail do Gestor RH para incluir em CC
+    let gestorRhEmail = '';
+    const gestorColumnId = GESTOR_RH_COLUMN_BY_BOARD[String(boardId)];
+    const gestorColumn = item.column_values.find((c) => c.id === gestorColumnId);
+    if (gestorColumn?.value) {
+      try {
+        const parsed = JSON.parse(gestorColumn.value);
+        const personId = parsed?.personsAndTeams?.[0]?.id;
+        if (personId) {
+          const gestorInfo = await this.monday.getUserById(String(personId));
+          gestorRhEmail = gestorInfo?.email ?? '';
+        }
+      } catch {
+        this.logger.warn('Failed to parse Gestor RH column for CC');
+      }
+    }
+
     try {
-      const result = await this.forms.initiateEvaluation({
-        tenant_id: tenant.id,
-        monday_item_id: String(itemId),
-        evaluator_email: evaluatorEmail,
-        evaluator_name: evaluatorEmail.split('@')[0],
-        coordinator_email: tenant.coordinator_email ?? 'danillo.tourinho@s2sbs.com.br',
-        expires_in_hours: 72,
-      });
+      const result = await this.forms.initiateEvaluation(
+        {
+          tenant_id: tenant.id,
+          monday_item_id: String(itemId),
+          evaluator_email: evaluatorEmail,
+          evaluator_name: evaluatorEmail.split('@')[0],
+          coordinator_email: tenant.coordinator_email ?? 'danillo.tourinho@s2sbs.com.br',
+          expires_in_hours: 720, // 30 dias
+        },
+        ip,
+        gestorRhEmail, // CC para o Gestor RH
+      );
 
       this.logger.log(`Evaluation initiated: ${result.token_id} for ${item.name}`);
       return { success: true, token_id: result.token_id };
