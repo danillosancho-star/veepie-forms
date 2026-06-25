@@ -19,6 +19,8 @@ import { SignatureService } from './modules/signature/signature.service';
 import { AuditService } from './modules/audit/audit.service';
 import { EmailService } from './modules/email/email.service';
 import { WebhooksController } from './modules/webhooks/webhooks.controller';
+import { SchedulerController } from './modules/scheduler/scheduler.controller';
+import { SchedulerService } from './modules/scheduler/scheduler.service';
 
 @Module({
   imports: [
@@ -28,7 +30,12 @@ import { WebhooksController } from './modules/webhooks/webhooks.controller';
     }),
     AuthModule,
   ],
-  controllers: [FormsController, ApprovalController, WebhooksController],
+  controllers: [
+    FormsController,
+    ApprovalController,
+    WebhooksController,
+    SchedulerController,
+  ],
   providers: [
     SupabaseService,
     FormsService,
@@ -37,6 +44,7 @@ import { WebhooksController } from './modules/webhooks/webhooks.controller';
     SignatureService,
     AuditService,
     EmailService,
+    SchedulerService,
   ],
 })
 export class AppModule {}

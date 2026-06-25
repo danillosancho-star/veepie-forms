@@ -101,6 +101,32 @@ export class MondayService {
     );
   }
 
+  async updateStatusColumn(
+    boardId: string,
+    itemId: string,
+    columnId: string,
+    labelIndex: number,
+  ) {
+    return this.query(
+      `mutation ($boardId: ID!, $itemId: ID!, $columnId: String!, $value: JSON!) {
+        change_column_value(
+          board_id: $boardId,
+          item_id: $itemId,
+          column_id: $columnId,
+          value: $value
+        ) {
+          id
+        }
+      }`,
+      {
+        boardId,
+        itemId,
+        columnId,
+        value: JSON.stringify({ index: labelIndex }),
+      },
+    );
+  }
+
   async uploadSignatureFile(
     itemId: string,
     columnId: string,
@@ -202,6 +228,86 @@ export class MondayService {
       { boardId },
     );
     return data.boards?.[0]?.items_page?.items ?? [];
+  }
+
+  async getAllItemsWithColumns(boardId: string, columnIds: string[]) {
+    const allItems: {
+      id: string;
+      name: string;
+      column_values: { id: string; text: string; value: string }[];
+    }[] = [];
+
+    let cursor: string | null = null;
+
+    do {
+      const data: {
+        boards?: {
+          items_page: {
+            cursor: string | null;
+            items: {
+              id: string;
+              name: string;
+              column_values: { id: string; text: string; value: string }[];
+            }[];
+          };
+        }[];
+        next_items_page?: {
+          cursor: string | null;
+          items: {
+            id: string;
+            name: string;
+            column_values: { id: string; text: string; value: string }[];
+          }[];
+        };
+      } = cursor
+        ? await this.query(
+            `query ($cursor: String!) {
+              next_items_page(cursor: $cursor, limit: 100) {
+                cursor
+                items {
+                  id
+                  name
+                  column_values {
+                    id
+                    text
+                    value
+                  }
+                }
+              }
+            }`,
+            { cursor },
+          )
+        : await this.query(
+            `query ($boardId: [ID!]!) {
+              boards(ids: $boardId) {
+                items_page(limit: 100) {
+                  cursor
+                  items {
+                    id
+                    name
+                    column_values {
+                      id
+                      text
+                      value
+                    }
+                  }
+                }
+              }
+            }`,
+            { boardId },
+          );
+
+      const page = cursor
+        ? data.next_items_page
+        : data.boards?.[0]?.items_page;
+
+      if (page?.items) {
+        allItems.push(...page.items);
+      }
+      cursor = page?.cursor ?? null;
+    } while (cursor);
+
+    return allItems;
   }
 
   async createNotification(userId: string, itemId: string, text: string) {

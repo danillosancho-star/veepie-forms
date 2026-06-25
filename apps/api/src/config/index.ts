@@ -5,6 +5,7 @@ export const appConfig = registerAs('app', () => ({
   port: parseInt(process.env.PORT ?? '3001', 10),
   webUrl: process.env.WEB_URL ?? 'http://localhost:5173',
   apiUrl: process.env.API_URL ?? 'http://localhost:3001',
+  schedulerSecret: process.env.SCHEDULER_SECRET ?? '',
 }));
 
 export const supabaseConfig = registerAs('supabase', () => ({
