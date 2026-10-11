@@ -18,7 +18,7 @@ import {
 } from '@veepie-forms/shared';
 
 const VALUE_TO_MONDAY_ID: Record<number, number> = {
-  0: 6,
+  0: 10,
   1: 1,
   2: 2,
   3: 3,
