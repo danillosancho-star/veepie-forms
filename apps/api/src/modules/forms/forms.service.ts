@@ -42,7 +42,7 @@ const TENANT_BOARDS: Record<string, {
     control: '18405904114',
     evaluation: '18404678821',
     evaluatorNameColumn: 'text_mm20524v',
-    signatureColumn: 'signatureni9sn5fm',
+    signatureColumn: 'signatureh1rayk4h',
   },
 };
 
@@ -289,12 +289,27 @@ export class FormsService {
         columnValues,
       );
 
-      const mondayFileId = await this.monday.uploadSignatureFile(
-        tokenRecord.monday_item_id,
-        boards.signatureColumn,
-        sigRecord.png_base64,
-        `assinatura_${tokenRecord.collaborator_name.replace(/\s+/g, '_')}.png`,
-      );
+      // A assinatura do avaliador é best-effort: se a coluna de arquivo mudar
+      // de id no board, o upload falha — mas isso JAMAIS pode impedir o
+      // acionamento da aprovação do RH (assinatura do coordenador).
+      let mondayFileId: string | null = null;
+      try {
+        mondayFileId = await this.monday.uploadSignatureFile(
+          tokenRecord.monday_item_id,
+          boards.signatureColumn,
+          sigRecord.png_base64,
+          `assinatura_${tokenRecord.collaborator_name.replace(/\s+/g, '_')}.png`,
+        );
+      } catch (sigErr) {
+        this.logger.error(
+          'Falha no upload da assinatura do avaliador (seguindo para aprovação do RH):',
+          sigErr,
+        );
+        await this.supabase.db
+          .from('form_submissions')
+          .update({ monday_sync_error: `signature_upload_failed: ${String(sigErr)}` })
+          .eq('id', submissionRecord.id);
+      }
 
       await this.supabase.db
         .from('evaluation_tokens')
@@ -306,10 +321,12 @@ export class FormsService {
         .update({ monday_synced_at: new Date().toISOString() })
         .eq('id', submissionRecord.id);
 
-      await this.supabase.db
-        .from('signature_records')
-        .update({ monday_file_id: mondayFileId })
-        .eq('id', sigRecord.id);
+      if (mondayFileId) {
+        await this.supabase.db
+          .from('signature_records')
+          .update({ monday_file_id: mondayFileId })
+          .eq('id', sigRecord.id);
+      }
 
       await this.audit.log({
         tokenId: tokenRecord.id,
