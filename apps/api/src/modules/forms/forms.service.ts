@@ -461,7 +461,6 @@ export class FormsService {
       .select('*')
       .eq('token_id', tokenRecord.id)
       .eq('signer_role', 'evaluator')
-      .order('created_at', { ascending: false })
       .limit(1);
 
     const sigRecord = sigs?.[0] ?? null;
