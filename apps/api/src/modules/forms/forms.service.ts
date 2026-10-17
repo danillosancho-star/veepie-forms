@@ -352,15 +352,19 @@ export class FormsService {
   }
 
   // ──────────────────────────────────────────────────────────────────
-  // Reprocesso (manutenção) — re-executa o syncToMonday de um token já
-  // existente, reaproveitando a submissão e a assinatura salvas no
-  // Supabase. Usado para destravar avaliações que falharam na sync
-  // (ex.: coluna de assinatura trocada de id no board).
+  // Recuperação (manutenção). Duas ações independentes e controladas,
+  // sem reescrever competências (evita regredir o "Não Aplicável" do
+  // PROCEDIMENTOS, que usa id 6 em vez de 10):
+  //   - restoreSignature: re-sobe a assinatura do avaliador (salva no
+  //     Supabase) na coluna atual do board. NÃO envia e-mail.
+  //   - reissueApproval: gera um novo link de aprovação e ENVIA e-mail
+  //     ao Gestor RH (só quando explicitamente ligado).
   // ──────────────────────────────────────────────────────────────────
 
   /**
-   * Lista tokens que parecem travados (não chegaram a 'submitted') mas que
-   * já têm submissão — ou seja, candidatos a reprocesso. Somente leitura.
+   * Lista tokens não concluídos (status != 'submitted') que já têm submissão.
+   * Observação: casos com upload de assinatura perdido costumam estar como
+   * 'submitted' e NÃO aparecem aqui — use resyncToMonday por item/token.
    */
   async listResyncCandidates() {
     const { data: tokens } = await this.supabase.db
@@ -381,7 +385,6 @@ export class FormsService {
         .eq('token_id', t.id)
         .limit(1);
 
-      // Só é candidato se existe submissão para reprocessar.
       if (!subs || subs.length === 0) continue;
 
       const { data: sigs } = await this.supabase.db
@@ -414,82 +417,122 @@ export class FormsService {
   }
 
   /**
-   * Reprocessa um token específico. Por padrão recusa tokens já concluídos
-   * (status 'submitted' + aprovação já iniciada) para não duplicar e-mail do
-   * RH nem anexar assinatura duas vezes. Use force=true para forçar.
-   * dryRun=true apenas inspeciona, sem escrever no Monday.
+   * Recupera um token/avaliação específico.
+   * @param idOrItem token_id (padrão) ou monday_item_id quando opts.byItem.
+   * @param opts.restoreSignature (padrão true) re-sobe a assinatura do avaliador.
+   * @param opts.reissueApproval (padrão false) reenvia o link e e-mail ao RH.
+   * @param opts.dryRun apenas inspeciona.
    */
   async resyncToMonday(
-    tokenId: string,
+    idOrItem: string,
     actorIp = 'resync',
-    opts: { force?: boolean; dryRun?: boolean } = {},
+    opts: {
+      byItem?: boolean;
+      restoreSignature?: boolean;
+      reissueApproval?: boolean;
+      dryRun?: boolean;
+    } = {},
   ) {
-    const { data: tokenRecord } = await this.supabase.db
-      .from('evaluation_tokens')
-      .select('*')
-      .eq('id', tokenId)
-      .single();
+    const restoreSignature = opts.restoreSignature !== false; // padrão: true
+    const reissueApproval = opts.reissueApproval === true;    // padrão: false
+
+    let tokenRecord: any = null;
+    if (opts.byItem) {
+      const { data } = await this.supabase.db
+        .from('evaluation_tokens')
+        .select('*')
+        .eq('monday_item_id', idOrItem)
+        .order('created_at', { ascending: false })
+        .limit(1);
+      tokenRecord = data?.[0] ?? null;
+    } else {
+      const { data } = await this.supabase.db
+        .from('evaluation_tokens')
+        .select('*')
+        .eq('id', idOrItem)
+        .single();
+      tokenRecord = data;
+    }
 
     if (!tokenRecord) throw new NotFoundException('Token de avaliação não encontrado.');
-
-    const { data: submissions } = await this.supabase.db
-      .from('form_submissions')
-      .select('*')
-      .eq('token_id', tokenId)
-      .order('created_at', { ascending: false })
-      .limit(1);
-
-    const submissionRecord = submissions?.[0];
-    if (!submissionRecord) {
-      throw new NotFoundException('Nenhuma submissão encontrada para este token.');
-    }
 
     const { data: sigs } = await this.supabase.db
       .from('signature_records')
       .select('*')
-      .eq('token_id', tokenId)
+      .eq('token_id', tokenRecord.id)
       .eq('signer_role', 'evaluator')
       .order('created_at', { ascending: false })
       .limit(1);
 
-    const sigRecord = sigs?.[0];
-    if (!sigRecord) {
-      throw new NotFoundException('Nenhuma assinatura do avaliador encontrada para este token.');
-    }
+    const sigRecord = sigs?.[0] ?? null;
 
-    const { data: existingApprovals } = await this.supabase.db
-      .from('approval_tokens')
-      .select('id')
-      .eq('evaluation_token_id', tokenId);
+    const { data: tenant } = await this.supabase.db
+      .from('tenants')
+      .select('slug')
+      .eq('id', tokenRecord.tenant_id)
+      .single();
 
-    const alreadyInitiated = (existingApprovals?.length ?? 0) > 0;
+    const boards = TENANT_BOARDS[tenant?.slug ?? 'vitalab'];
 
     const state = {
-      token_id: tokenId,
+      token_id: tokenRecord.id,
       collaborator_name: tokenRecord.collaborator_name,
       status: tokenRecord.status,
       monday_item_id: tokenRecord.monday_item_id,
       monday_board_id: tokenRecord.monday_board_id,
-      has_submission: true,
-      has_evaluator_signature: true,
-      approval_already_initiated: alreadyInitiated,
-      existing_monday_file_id: sigRecord.monday_file_id ?? null,
+      signature_column: boards.signatureColumn,
+      has_evaluator_signature_saved: !!sigRecord?.png_base64,
     };
 
-    if (alreadyInitiated && !opts.force) {
-      return { reprocessed: false, reason: 'approval_already_initiated', state };
-    }
-
     if (opts.dryRun) {
-      return { reprocessed: false, reason: 'dry_run', state };
+      return {
+        reprocessed: false,
+        reason: 'dry_run',
+        actions: { restoreSignature, reissueApproval },
+        state,
+      };
     }
 
-    try {
-      await this.syncToMonday(tokenRecord, submissionRecord, sigRecord, actorIp, 'resync');
-    } catch (err) {
-      return { reprocessed: false, reason: 'sync_error', error: String(err), state };
+    const result: any = {};
+
+    if (restoreSignature) {
+      if (!sigRecord?.png_base64) {
+        result.signature = { ok: false, reason: 'no_signature_saved' };
+      } else {
+        try {
+          const mondayFileId = await this.monday.uploadSignatureFile(
+            tokenRecord.monday_item_id,
+            boards.signatureColumn,
+            sigRecord.png_base64,
+            `assinatura_${tokenRecord.collaborator_name.replace(/\s+/g, '_')}.png`,
+          );
+          await this.supabase.db
+            .from('signature_records')
+            .update({ monday_file_id: mondayFileId })
+            .eq('id', sigRecord.id);
+          result.signature = { ok: true, monday_file_id: mondayFileId };
+        } catch (err) {
+          result.signature = { ok: false, error: String(err) };
+        }
+      }
     }
 
-    return { reprocessed: true, state };
+    if (reissueApproval) {
+      try {
+        const appr = await this.approvalService.initiateApproval(tokenRecord.id, actorIp);
+        result.approval = appr
+          ? { ok: true, ...appr }
+          : { ok: false, reason: 'initiate_returned_null' };
+      } catch (err) {
+        result.approval = { ok: false, error: String(err) };
+      }
+    }
+
+    return {
+      reprocessed: true,
+      actions: { restoreSignature, reissueApproval },
+      state,
+      result,
+    };
   }
 }

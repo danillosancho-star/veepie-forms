@@ -47,7 +47,7 @@ export class FormsController {
   }
 
   // ──────────────────────────────────────────────────────────────────
-  // Endpoints de manutenção (reprocesso). Protegidos por header
+  // Endpoints de manutenção. Protegidos por header
   // x-admin-secret == process.env.ADMIN_RESYNC_SECRET.
   // ──────────────────────────────────────────────────────────────────
 
@@ -57,11 +57,21 @@ export class FormsController {
     return this.forms.listResyncCandidates();
   }
 
-  @Post('resync/:tokenId')
+  /**
+   * Recupera uma avaliação.
+   *   :id            token_id (padrão) ou monday_item_id se byItem=true
+   *   ?byItem=true   trata :id como monday_item_id
+   *   ?restoreSignature=false  NÃO re-sobe a assinatura do avaliador (padrão: sobe)
+   *   ?reissueApproval=true    reenvia o link e e-mail ao RH (padrão: não envia)
+   *   ?dryRun=true   só inspeciona
+   */
+  @Post('resync/:id')
   @HttpCode(HttpStatus.OK)
   resync(
-    @Param('tokenId') tokenId: string,
-    @Query('force') force: string,
+    @Param('id') id: string,
+    @Query('byItem') byItem: string,
+    @Query('restoreSignature') restoreSignature: string,
+    @Query('reissueApproval') reissueApproval: string,
     @Query('dryRun') dryRun: string,
     @Headers('x-admin-secret') secret: string,
     @Req() req: Request,
@@ -69,8 +79,10 @@ export class FormsController {
     this.assertAdmin(secret);
     const rawIp = (req.headers['x-forwarded-for'] as string) ?? req.ip ?? '';
     const ip = rawIp.split(',')[0].trim() || 'resync';
-    return this.forms.resyncToMonday(tokenId, ip, {
-      force: force === 'true' || force === '1',
+    return this.forms.resyncToMonday(id, ip, {
+      byItem: byItem === 'true' || byItem === '1',
+      restoreSignature: restoreSignature !== 'false',
+      reissueApproval: reissueApproval === 'true' || reissueApproval === '1',
       dryRun: dryRun === 'true' || dryRun === '1',
     });
   }
