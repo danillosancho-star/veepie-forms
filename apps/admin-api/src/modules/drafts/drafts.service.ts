@@ -19,7 +19,7 @@ function slugify(name: string): string {
   return name
     .toLowerCase()
     .normalize('NFD')
-    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[̀-ͯ]/g, '')
     .replace(/[^a-z0-9]+/g, '_')
     .replace(/^_+|_+$/g, '')
     .slice(0, 60);
@@ -29,7 +29,7 @@ function slugify(name: string): string {
 export class DraftsService {
   constructor(private supabase: SupabaseService) {}
 
-  // Valida que toda compet\u00eancia vem do pool permitido (decis\u00e3o "b")
+  // Valida que toda competência vem do pool permitido (decisão "b")
   private async validateCompetencies(tenantId: string, comps: Competency[]) {
     const { data: pool } = await this.supabase.db
       .from('available_competencies')
@@ -41,10 +41,30 @@ export class DraftsService {
     for (const c of comps ?? []) {
       if (!c.monday_column_id || !allowed.has(c.monday_column_id)) {
         throw new BadRequestException(
-          `A compet\u00eancia "${c.title ?? c.monday_column_id}" n\u00e3o est\u00e1 no cat\u00e1logo dispon\u00edvel.`,
+          `A competência "${c.title ?? c.monday_column_id}" não está no catálogo disponível.`,
         );
       }
     }
+  }
+
+  // Gera um external_id único no tenant a partir do título FINAL do cargo.
+  // Ex.: "Assistente Financeiro" -> assistente_financeiro (ou _2, _3... se já existir).
+  // Chamado na publicação, para não herdar o "novo_cargo" do título provisório.
+  private async uniqueExternalId(tenantId: string, title: string): Promise<string> {
+    const base = slugify(title) || 'cargo';
+
+    const { data } = await this.supabase.db
+      .from('function_schemas')
+      .select('external_id')
+      .eq('tenant_id', tenantId)
+      .like('external_id', `${base}%`);
+
+    const taken = new Set((data ?? []).map((r: any) => r.external_id));
+    if (!taken.has(base)) return base;
+
+    let n = 2;
+    while (taken.has(`${base}_${n}`)) n++;
+    return `${base}_${n}`;
   }
 
   async list(tenantId: string) {
@@ -64,7 +84,7 @@ export class DraftsService {
       .eq('tenant_id', tenantId)
       .eq('id', id)
       .single();
-    if (!data) throw new NotFoundException('Rascunho n\u00e3o encontrado.');
+    if (!data) throw new NotFoundException('Rascunho não encontrado.');
     return data;
   }
 
@@ -73,6 +93,7 @@ export class DraftsService {
       await this.validateCompetencies(tenantId, input.competencies);
     }
 
+    // Para cargos novos este valor é provisório: o definitivo é gerado na publicação.
     const external_id = input.external_id || slugify(input.title);
 
     const { data, error } = await this.supabase.db
@@ -95,7 +116,7 @@ export class DraftsService {
     return data;
   }
 
-  // Come\u00e7a a editar um cargo AO VIVO \u2192 cria um rascunho copiando o estado atual
+  // Começa a editar um cargo AO VIVO → cria um rascunho copiando o estado atual
   async createFromSchema(tenantId: string, adminId: string, schemaId: string) {
     const { data: schema } = await this.supabase.db
       .from('function_schemas')
@@ -103,7 +124,7 @@ export class DraftsService {
       .eq('tenant_id', tenantId)
       .eq('id', schemaId)
       .single();
-    if (!schema) throw new NotFoundException('Cargo n\u00e3o encontrado.');
+    if (!schema) throw new NotFoundException('Cargo não encontrado.');
 
     return this.create(tenantId, adminId, {
       function_schema_id: schema.id,
@@ -159,11 +180,11 @@ export class DraftsService {
     return ((data?.[0]?.version_number as number) ?? 0) + 1;
   }
 
-  // ── PUBLICAR \u2014 o \u00fanico ponto que altera produ\u00e7\u00e3o ──────────────
+  // ── PUBLICAR — o único ponto que altera produção ──────────────
   async publish(tenantId: string, adminId: string, id: string) {
     const draft = await this.getOne(tenantId, id);
     if (draft.status !== 'draft') {
-      throw new BadRequestException('Este rascunho j\u00e1 foi publicado ou descartado.');
+      throw new BadRequestException('Este rascunho já foi publicado ou descartado.');
     }
 
     const db = this.supabase.db;
@@ -171,6 +192,13 @@ export class DraftsService {
     // ── CRIAR novo cargo ──
     if (draft.operation === 'create') {
       await this.validateCompetencies(tenantId, draft.competencies);
+
+      // Sem o cargo do Monday a matriz nunca seria usada pelas avaliações.
+      if (!draft.monday_function_value || !String(draft.monday_function_value).trim()) {
+        throw new BadRequestException(
+          'Informe o cargo do Monday (exatamente como aparece na coluna Cargo do board) antes de publicar.',
+        );
+      }
 
       // Evita dois cargos ativos apontando para o mesmo valor de Cargo
       const { data: clash } = await db
@@ -182,15 +210,18 @@ export class DraftsService {
         .maybeSingle();
       if (clash) {
         throw new BadRequestException(
-          'J\u00e1 existe um cargo ativo com esse valor de fun\u00e7\u00e3o do Monday.',
+          'Já existe um cargo ativo com esse valor de função do Monday.',
         );
       }
+
+      // Identificador definitivo, gerado do título final e único no tenant
+      const externalId = await this.uniqueExternalId(tenantId, draft.title);
 
       const { data: inserted, error } = await db
         .from('function_schemas')
         .insert({
           tenant_id: tenantId,
-          external_id: draft.external_id,
+          external_id: externalId,
           title: draft.title,
           monday_function_value: draft.monday_function_value,
           competencies: draft.competencies,
@@ -198,7 +229,14 @@ export class DraftsService {
         })
         .select()
         .single();
-      if (error) throw new BadRequestException(error.message);
+      if (error) {
+        if ((error as any).code === '23505') {
+          throw new BadRequestException(
+            'Já existe um cargo com este identificador. Tente publicar novamente; se persistir, ajuste o nome do cargo.',
+          );
+        }
+        throw new BadRequestException(error.message);
+      }
 
       await db.from('schema_versions').insert({
         function_schema_id: inserted.id,
@@ -216,6 +254,7 @@ export class DraftsService {
           status: 'published',
           published_at: new Date().toISOString(),
           function_schema_id: inserted.id,
+          external_id: externalId,
         })
         .eq('id', draft.id);
 
@@ -226,7 +265,7 @@ export class DraftsService {
     if (draft.operation === 'update') {
       await this.validateCompetencies(tenantId, draft.competencies);
       const schemaId = draft.function_schema_id;
-      if (!schemaId) throw new BadRequestException('Rascunho sem cargo de refer\u00eancia.');
+      if (!schemaId) throw new BadRequestException('Rascunho sem cargo de referência.');
 
       const next = await this.nextVersion(schemaId);
 
@@ -262,7 +301,7 @@ export class DraftsService {
     // ── EXCLUIR (desativar) cargo ──
     if (draft.operation === 'delete') {
       const schemaId = draft.function_schema_id;
-      if (!schemaId) throw new BadRequestException('Rascunho sem cargo de refer\u00eancia.');
+      if (!schemaId) throw new BadRequestException('Rascunho sem cargo de referência.');
 
       const { data: current } = await db
         .from('function_schemas')
@@ -297,10 +336,10 @@ export class DraftsService {
       return { success: true, function_schema_id: schemaId, operation: 'delete' };
     }
 
-    throw new BadRequestException('Opera\u00e7\u00e3o desconhecida.');
+    throw new BadRequestException('Operação desconhecida.');
   }
 
-  // Restaurar uma vers\u00e3o antiga \u2192 cria um rascunho (update) para revis\u00e3o
+  // Restaurar uma versão antiga → cria um rascunho (update) para revisão
   async restoreVersion(tenantId: string, adminId: string, versionId: string) {
     const { data: version } = await this.supabase.db
       .from('schema_versions')
@@ -308,7 +347,7 @@ export class DraftsService {
       .eq('tenant_id', tenantId)
       .eq('id', versionId)
       .single();
-    if (!version) throw new NotFoundException('Vers\u00e3o n\u00e3o encontrada.');
+    if (!version) throw new NotFoundException('Versão não encontrada.');
 
     return this.create(tenantId, adminId, {
       function_schema_id: version.function_schema_id,
